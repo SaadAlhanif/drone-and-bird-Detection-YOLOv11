@@ -6,38 +6,38 @@ import streamlit as st
 from ultralytics import YOLO
 import cv2
 import imageio_ffmpeg
-import gdown
 
 
 # =========================
-# Page UI (لا تغيير)
+# Page UI
 # =========================
-st.set_page_config(page_title="Drone Detection", layout="wide")
+st.set_page_config(page_title="Drone Detection")
 st.title("🛸 Drone Detection (Video)")
 st.write("ارفع فيديو، والنظام بيطلع لك فيديو عليه كشف الدرون + كلمة Drone فوقه.")
 
+# ✅ ثابت: تصغير عرض الفيديو (Input/Output) إلى 700px
+st.markdown("""
+<style>
+video {
+    max-width: 200px !important;
+    width: 100% !important;
+    height: auto !important;
+    display: block;
+    margin-left: 0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 # =========================
-# Model (تحميل تلقائي من Google Drive)
+# Model
 # =========================
 MODEL_PATH = "best.pt"
-GDRIVE_FILE_ID = "1Bd0EvtNsagapzoDQ1zMPKePceyjlJ6oJ"
-GDRIVE_URL = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
 
 @st.cache_resource
 def load_model():
-    # إذا الملف غير موجود في الريبو -> نزّله من Drive
     if not os.path.exists(MODEL_PATH):
-        st.info("⬇️ best.pt غير موجود، جاري تحميله من Google Drive ...")
-        try:
-            gdown.download(GDRIVE_URL, MODEL_PATH, quiet=False)
-        except Exception as e:
-            raise FileNotFoundError(
-                "❌ ما قدرت أحمل best.pt من Google Drive.\n"
-                "تأكد الرابط Public/Anyone with the link + حجم الملف مسموح.\n"
-                f"تفاصيل الخطأ: {e}"
-            )
-
+        raise FileNotFoundError("❌ ملف best.pt غير موجود في نفس مجلد app.py")
     return YOLO(MODEL_PATH)
 
 model = load_model()
@@ -48,74 +48,79 @@ model = load_model()
 # =========================
 st.sidebar.header("⚙️ Settings")
 conf_thres = st.sidebar.slider("Confidence", 0.05, 0.95, 0.30, 0.05)
-iou_thres  = st.sidebar.slider("IoU",        0.05, 0.95, 0.45, 0.05)
+iou_thres  = st.sidebar.slider("IoU", 0.05, 0.95, 0.50, 0.05)
 
-uploaded_file = st.file_uploader("📤 ارفع فيديو", type=["mp4", "mov", "avi", "mkv"])
+uploaded = st.file_uploader("📤 ارفع فيديو", type=["mp4", "mov", "avi", "mkv"])
 
-if uploaded_file is None:
+if uploaded is None:
+    st.info("ارفع فيديو عشان نبدأ.")
     st.stop()
 
 
 # =========================
-# Save upload to temp
+# Save input
 # =========================
 tmp_dir = tempfile.mkdtemp()
-input_path = os.path.join(tmp_dir, uploaded_file.name)
+input_path = os.path.join(tmp_dir, uploaded.name)
 
 with open(input_path, "wb") as f:
-    f.write(uploaded_file.read())
+    f.write(uploaded.getbuffer())
+
+st.success("✅ تم رفع الفيديو")
 
 
 # =========================
-# Video IO init
+# Read video
 # =========================
 cap = cv2.VideoCapture(input_path)
 if not cap.isOpened():
     st.error("❌ ما قدرت أفتح الفيديو.")
     st.stop()
 
-fps = cap.get(cv2.CAP_PROP_FPS) or 30
-w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.get(cv2.CAP_PROP_FRAME_COUNT) else 0
+fps = cap.get(cv2.CAP_PROP_FPS)
+if fps is None or fps <= 0:
+    fps = 30.0
 
+width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+if width <= 0 or height <= 0:
+    st.error("❌ ما قدرت أحدد أبعاد الفيديو.")
+    cap.release()
+    st.stop()
+
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+
+# =========================
+# Output writer
+# =========================
 raw_output_path = os.path.join(tmp_dir, "output_raw.mp4")
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-writer = cv2.VideoWriter(raw_output_path, fourcc, fps, (w, h))
+writer = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
+
+if not writer.isOpened():
+    st.error("❌ ما قدرت أفتح VideoWriter. جرّب فيديو ثاني.")
+    cap.release()
+    st.stop()
 
 
 # =========================
-# UI progress
+# Show input video
 # =========================
+st.subheader("🎬 الفيديو الأصلي")
+with open(input_path, "rb") as f:
+    st.video(f.read())
+
+st.divider()
+
+
+# =========================
+# Processing
+# =========================
+st.subheader("⚙️ جاري المعالجة...")
 progress = st.progress(0)
 status = st.empty()
 
-
-# =========================
-# Helper: label mapping
-# =========================
-def get_label_name(cls_id: int) -> str:
-    # أسماء الكلاسات من المودل (إذا موجودة)
-    try:
-        names = model.names  # dict or list
-        if isinstance(names, dict):
-            return str(names.get(cls_id, cls_id))
-        elif isinstance(names, list):
-            return str(names[cls_id]) if cls_id < len(names) else str(cls_id)
-    except Exception:
-        pass
-
-    # احتياط (حسب طلبك: Drone + Bird)
-    if cls_id == 0:
-        return "bird"
-    if cls_id == 1:
-        return "drone"
-    return str(cls_id)
-
-
-# =========================
-# Process frames
-# =========================
 frame_idx = 0
 
 while True:
@@ -123,36 +128,45 @@ while True:
     if not ret:
         break
 
-    # predict
+    frame_idx += 1
     results = model.predict(frame, conf=conf_thres, iou=iou_thres, verbose=False)
-    r = results[0]
 
-    # draw boxes + labels (Drone/Bird)
-    if r.boxes is not None and len(r.boxes) > 0:
-        for b in r.boxes:
-            xyxy = b.xyxy[0].cpu().numpy().astype(int)
-            x1, y1, x2, y2 = xyxy
+    if results and len(results) > 0:
+        r = results[0]
 
-            cls_id = int(b.cls[0].item()) if b.cls is not None else -1
-            conf   = float(b.conf[0].item()) if b.conf is not None else 0.0
+        # أسماء الكلاسات من المودل (مثل: ['drone','bird'] أو غيرها)
+        names = r.names if hasattr(r, "names") and r.names is not None else model.names
 
-            label_name = get_label_name(cls_id)
-            label_text = f"{label_name} {conf:.2f}"
+        if r.boxes is not None and len(r.boxes) > 0:
+            for b in r.boxes:
+                x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+                conf = float(b.conf[0]) if b.conf is not None else 0.0
 
-            # box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # ✅ الجديد: نطلع اسم الكلاس الحقيقي (Drone / Bird ...)
+                cls_id = int(b.cls[0]) if b.cls is not None else -1
+                label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else (names[cls_id] if 0 <= cls_id < len(names) else str(cls_id))
 
-            # label bg
-            (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 6, y1), (0, 255, 0), -1)
+                # box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # label text
-            cv2.putText(frame, label_text, (x1 + 3, y1 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+                # label background + text
+                txt = f"{label} {conf:.2f}"
+                (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                y_top = max(y1 - th - 10, 0)
+                cv2.rectangle(frame, (x1, y_top), (x1 + tw + 8, y1), (0, 255, 0), -1)
+                cv2.putText(
+                    frame,
+                    txt,
+                    (x1 + 4, max(y1 - 6, 0)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 0),
+                    2,
+                    cv2.LINE_AA
+                )
 
     writer.write(frame)
 
-    frame_idx += 1
     if total_frames > 0:
         p = min(frame_idx / total_frames, 1.0)
         progress.progress(int(p * 100))
