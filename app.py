@@ -6,44 +6,6 @@ import streamlit as st
 from ultralytics import YOLO
 import cv2
 import imageio_ffmpeg
-import requests
-
-
-# =========================
-# Google Drive download helper
-# =========================
-GDRIVE_URL = "https://drive.google.com/file/d/1Bd0EvtNsagapzoDQ1zMPKePceyjlJ6oJ/view?usp=sharing"
-GDRIVE_FILE_ID = "1Bd0EvtNsagapzoDQ1zMPKePceyjlJ6oJ"  # extracted from your link
-
-
-def download_from_gdrive(file_id: str, dest_path: str):
-    """
-    Download a file from Google Drive to dest_path (handles large file confirmation token).
-    """
-    session = requests.Session()
-    url = "https://drive.google.com/uc?export=download"
-
-    # 1) first request
-    response = session.get(url, params={"id": file_id}, stream=True)
-    response.raise_for_status()
-
-    # 2) handle confirm token for large files
-    confirm_token = None
-    for k, v in response.cookies.items():
-        if k.startswith("download_warning"):
-            confirm_token = v
-            break
-
-    if confirm_token:
-        response = session.get(url, params={"id": file_id, "confirm": confirm_token}, stream=True)
-        response.raise_for_status()
-
-    # 3) save
-    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-    with open(dest_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
 
 
 # =========================
@@ -74,25 +36,15 @@ MODEL_PATH = "best.pt"
 
 @st.cache_resource
 def load_model():
-    # ✅ إذا best.pt غير موجود: نزّله من Google Drive
     if not os.path.exists(MODEL_PATH):
-        with st.spinner("⬇️ جاري تحميل best.pt من Google Drive ..."):
-            try:
-                download_from_gdrive(GDRIVE_FILE_ID, MODEL_PATH)
-            except Exception as e:
-                raise FileNotFoundError(
-                    "❌ ما قدرت أحمل best.pt من Google Drive.\n"
-                    f"السبب: {e}\n"
-                    "تأكد إن الرابط Public (Anyone with the link)."
-                )
-
-    # ✅ تأكد انه نزل فعلاً
-    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1024:
-        raise FileNotFoundError("❌ فشل تحميل best.pt أو الملف حجمه غير صحيح.")
-
+        raise FileNotFoundError("❌ ملف best.pt غير موجود في نفس مجلد app.py")
     return YOLO(MODEL_PATH)
 
 model = load_model()
+
+# ✅ (إضافة بسيطة) أسماء الكلاسات + تحديد المسموح
+names = model.names if isinstance(model.names, dict) else {i: n for i, n in enumerate(model.names)}
+ALLOWED = {"drone", "bird"}
 
 
 # =========================
@@ -185,27 +137,22 @@ while True:
 
     if results and len(results) > 0:
         r = results[0]
-
-        # أسماء الكلاسات من المودل (مثل: ['drone','bird'] أو غيرها)
-        names = r.names if hasattr(r, "names") and r.names is not None else model.names
-
         if r.boxes is not None and len(r.boxes) > 0:
             for b in r.boxes:
+                # ✅ (إضافة بسيطة) نجيب اسم الكلاس ونفلتر Drone/Bird فقط
+                cls = int(b.cls[0]) if b.cls is not None else -1
+                name = names.get(cls, str(cls))
+                if name.lower() not in ALLOWED:
+                    continue
+
                 x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
                 conf = float(b.conf[0]) if b.conf is not None else 0.0
-
-                # ✅ يطلع اسم الكلاس الحقيقي (Drone / Bird ...)
-                cls_id = int(b.cls[0]) if b.cls is not None else -1
-                label = (
-                    names.get(cls_id, str(cls_id)) if isinstance(names, dict)
-                    else (names[cls_id] if 0 <= cls_id < len(names) else str(cls_id))
-                )
 
                 # box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
                 # label background + text
-                txt = f"{label} {conf:.2f}"
+                txt = f"{name} {conf:.2f}"   # ✅ بدل LABEL_TEXT صار الاسم الحقيقي
                 (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
                 y_top = max(y1 - th - 10, 0)
                 cv2.rectangle(frame, (x1, y_top), (x1 + tw + 8, y1), (0, 255, 0), -1)
