@@ -1,41 +1,50 @@
 import os
 import tempfile
 import subprocess
-import shutil
 
 import streamlit as st
+from ultralytics import YOLO
 import cv2
 import imageio_ffmpeg
-import gdown
-from ultralytics import YOLO
 
 
 # =========================
 # Page UI
 # =========================
-st.set_page_config(page_title="Drone Detection", layout="wide")
+st.set_page_config(page_title="Drone Detection")
 st.title("🛸 Drone Detection (Video)")
-st.write("ارفع فيديو، والنظام بيطلع لك فيديو عليه كشف (Drone/Bird) فوق البوكس.")
+st.write("ارفع فيديو، والنظام بيطلع لك فيديو عليه كشف الدرون + كلمة Drone فوقه.")
+
+# ✅ ثابت: تصغير عرض الفيديو (Input/Output) إلى 700px
+st.markdown("""
+<style>
+video {
+    max-width: 200px !important;
+    width: 100% !important;
+    height: auto !important;
+    display: block;
+    margin-left: 0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 
 # =========================
-# Model (Auto download)
+# Model
 # =========================
 MODEL_PATH = "best.pt"
 
-# 🔗 Google Drive file ID (من الرابط اللي أرسلته)
-FILE_ID = "1Bd0EvtNsagapzoDQ1zMPKePceyjlJ6oJ"
-DRIVE_URL = f"https://drive.google.com/uc?id={FILE_ID}"
-
 @st.cache_resource
 def load_model():
-    # لو المودل غير موجود -> حمّله من درايف
     if not os.path.exists(MODEL_PATH):
-        with st.spinner("⬇️ جاري تحميل المودل من Google Drive..."):
-            gdown.download(DRIVE_URL, MODEL_PATH, quiet=False)
+        raise FileNotFoundError("❌ ملف best.pt غير موجود في نفس مجلد app.py")
     return YOLO(MODEL_PATH)
 
 model = load_model()
+
+# ✅ (إضافة بسيطة) أسماء الكلاسات + تحديد المسموح
+names = model.names if isinstance(model.names, dict) else {i: n for i, n in enumerate(model.names)}
+ALLOWED = {"drone", "bird"}
 
 
 # =========================
@@ -43,16 +52,143 @@ model = load_model()
 # =========================
 st.sidebar.header("⚙️ Settings")
 conf_thres = st.sidebar.slider("Confidence", 0.05, 0.95, 0.30, 0.05)
-iou_thres  = st.sidebar.slider("IoU",        0.05, 0.95, 0.50, 0.05)
-show_conf  = st.sidebar.checkbox("Show confidence on label", value=True)
-imgsz = st.sidebar.select_slider("Inference size (imgsz)", options=[320, 416, 512, 640], value=640)
+iou_thres  = st.sidebar.slider("IoU", 0.05, 0.95, 0.50, 0.05)
 
-uploaded = st.file_uploader("📤 Upload a video", type=["mp4", "mov", "avi", "mkv"])
+uploaded = st.file_uploader("📤 ارفع فيديو", type=["mp4", "mov", "avi", "mkv"])
+
+if uploaded is None:
+    st.info("ارفع فيديو عشان نبدأ.")
+    st.stop()
 
 
 # =========================
-# Helpers
+# Save input
 # =========================
+tmp_dir = tempfile.mkdtemp()
+input_path = os.path.join(tmp_dir, uploaded.name)
+
+with open(input_path, "wb") as f:
+    f.write(uploaded.getbuffer())
+
+st.success("✅ تم رفع الفيديو")
+
+
+# =========================
+# Read video
+# =========================
+cap = cv2.VideoCapture(input_path)
+if not cap.isOpened():
+    st.error("❌ ما قدرت أفتح الفيديو.")
+    st.stop()
+
+fps = cap.get(cv2.CAP_PROP_FPS)
+if fps is None or fps <= 0:
+    fps = 30.0
+
+width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+if width <= 0 or height <= 0:
+    st.error("❌ ما قدرت أحدد أبعاد الفيديو.")
+    cap.release()
+    st.stop()
+
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+
+# =========================
+# Output writer
+# =========================
+raw_output_path = os.path.join(tmp_dir, "output_raw.mp4")
+fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+writer = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
+
+if not writer.isOpened():
+    st.error("❌ ما قدرت أفتح VideoWriter. جرّب فيديو ثاني.")
+    cap.release()
+    st.stop()
+
+
+# =========================
+# Show input video
+# =========================
+st.subheader("🎬 الفيديو الأصلي")
+with open(input_path, "rb") as f:
+    st.video(f.read())
+
+st.divider()
+
+
+# =========================
+# Processing
+# =========================
+st.subheader("⚙️ جاري المعالجة...")
+progress = st.progress(0)
+status = st.empty()
+
+frame_idx = 0
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame_idx += 1
+    results = model.predict(frame, conf=conf_thres, iou=iou_thres, verbose=False)
+
+    if results and len(results) > 0:
+        r = results[0]
+        if r.boxes is not None and len(r.boxes) > 0:
+            for b in r.boxes:
+                # ✅ (إضافة بسيطة) نجيب اسم الكلاس ونفلتر Drone/Bird فقط
+                cls = int(b.cls[0]) if b.cls is not None else -1
+                name = names.get(cls, str(cls))
+                if name.lower() not in ALLOWED:
+                    continue
+
+                x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+                conf = float(b.conf[0]) if b.conf is not None else 0.0
+
+                # box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                # label background + text
+                txt = f"{name} {conf:.2f}"   # ✅ بدل LABEL_TEXT صار الاسم الحقيقي
+                (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                y_top = max(y1 - th - 10, 0)
+                cv2.rectangle(frame, (x1, y_top), (x1 + tw + 8, y1), (0, 255, 0), -1)
+                cv2.putText(
+                    frame,
+                    txt,
+                    (x1 + 4, max(y1 - 6, 0)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 0),
+                    2,
+                    cv2.LINE_AA
+                )
+
+    writer.write(frame)
+
+    if total_frames > 0:
+        p = min(frame_idx / total_frames, 1.0)
+        progress.progress(int(p * 100))
+        status.write(f"Processing frame {frame_idx}/{total_frames} ...")
+    else:
+        if frame_idx % 30 == 0:
+            status.write(f"Processing frame {frame_idx} ...")
+
+cap.release()
+writer.release()
+
+progress.progress(100)
+status.write("✅ Finished!")
+
+
+# =========================
+# Convert to H.264 (better browser playback)
+# =========================
+final_output_path = os.path.join(tmp_dir, "output_h264.mp4")
+
 def convert_to_h264(src, dst):
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     cmd = [
@@ -65,131 +201,29 @@ def convert_to_h264(src, dst):
         "-b:a", "128k",
         dst
     ]
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if p.returncode != 0:
-        raise RuntimeError(p.stderr.decode("utf-8", errors="ignore"))
-
-def get_color(name: str):
-    n = name.lower()
-    if "drone" in n:
-        return (0, 0, 255)      # Red
-    if "bird" in n:
-        return (255, 0, 0)      # Blue
-    return (0, 255, 0)
-
-
-# ✅ فقط هذي الإضافة: نحدد الكلاسات المسموح فيها
-ALLOWED_CLASSES = {"drone", "bird"}
-
-
-# =========================
-# Main
-# =========================
-if uploaded is None:
-    st.info("ارفع فيديو عشان يبدأ الكشف.")
-    st.stop()
-
-tmp_dir = tempfile.mkdtemp()
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 try:
-    # Save uploaded video
-    input_path = os.path.join(tmp_dir, uploaded.name)
-    with open(input_path, "wb") as f:
-        f.write(uploaded.read())
+    convert_to_h264(raw_output_path, final_output_path)
+    playable_path = final_output_path
+except Exception:
+    playable_path = raw_output_path
 
-    cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened():
-        st.error("❌ ما قدرت أفتح الفيديو. جرّب فيديو آخر.")
-        st.stop()
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if not fps or fps <= 0:
-        fps = 25
+# =========================
+# Show output
+# =========================
+st.subheader("📌 الفيديو الناتج")
+with open(playable_path, "rb") as f:
+    out_bytes = f.read()
 
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.get(cv2.CAP_PROP_FRAME_COUNT) else 0
+st.video(out_bytes)
 
-    raw_output_path = os.path.join(tmp_dir, "output_raw.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
+st.download_button(
+    "⬇️ Download result video",
+    data=out_bytes,
+    file_name="drone_detection_output.mp4",
+    mime="video/mp4"
+)
 
-    st.subheader("⏳ Processing")
-    progress = st.progress(0)
-    status = st.empty()
-
-    frame_idx = 0
-    names = model.names if isinstance(model.names, dict) else {i: n for i, n in enumerate(model.names)}
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame_idx += 1
-
-        results = model.predict(
-            frame,
-            conf=conf_thres,
-            iou=iou_thres,
-            imgsz=imgsz,
-            verbose=False
-        )[0]
-
-        for box in results.boxes:
-            cls = int(box.cls[0])
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            name = names.get(cls, str(cls))
-
-            # ✅ فقط هذي الإضافة: فلترة الكلاسين (Drone/Bird)
-            if name.lower() not in ALLOWED_CLASSES:
-                continue
-
-            label = f"{name} {conf:.2f}" if show_conf else f"{name}"
-            color = get_color(name)
-
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                frame, label,
-                (x1, max(30, y1 - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8, color, 2
-            )
-
-        writer.write(frame)
-
-        if total_frames > 0:
-            p = min(frame_idx / total_frames, 1.0)
-            progress.progress(int(p * 100))
-            status.write(f"Processing frame {frame_idx}/{total_frames} ...")
-
-    cap.release()
-    writer.release()
-
-    progress.progress(100)
-    status.write("✅ Finished!")
-
-    # Convert to H.264
-    final_output_path = os.path.join(tmp_dir, "output_h264.mp4")
-    try:
-        convert_to_h264(raw_output_path, final_output_path)
-        playable_path = final_output_path
-    except Exception:
-        playable_path = raw_output_path
-
-    st.subheader("📌 الفيديو الناتج")
-    with open(playable_path, "rb") as f:
-        out_bytes = f.read()
-
-    st.video(out_bytes)
-
-    st.download_button(
-        "⬇️ Download result video",
-        data=out_bytes,
-        file_name="drone_detection_output.mp4",
-        mime="video/mp4"
-    )
-
-finally:
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+st.caption("إذا الفيديو طويل جدًا ممكن ياخذ وقت بالمعالجة على Streamlit Cloud.")
