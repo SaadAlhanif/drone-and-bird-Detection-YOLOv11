@@ -78,6 +78,10 @@ def get_color(name: str):
     return (0, 255, 0)
 
 
+# ✅ فقط هذي الإضافة: نحدد الكلاسات المسموح فيها
+ALLOWED_CLASSES = {"drone", "bird"}
+
+
 # =========================
 # Main
 # =========================
@@ -137,6 +141,10 @@ try:
             conf = float(box.conf[0])
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             name = names.get(cls, str(cls))
+
+            # ✅ فقط هذي الإضافة: فلترة الكلاسين (Drone/Bird)
+            if name.lower() not in ALLOWED_CLASSES:
+                continue
 
             label = f"{name} {conf:.2f}" if show_conf else f"{name}"
             color = get_color(name)
