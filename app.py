@@ -10,9 +10,6 @@ import gdown
 from ultralytics import YOLO
 
 
-# =========================
-# Page UI
-# =========================
 st.set_page_config(page_title="Drone Detection")
 st.title("🛸 Drone Detection (Video)")
 st.write("ارفع فيديو، والنظام بيطلع لك فيديو عليه كشف (Drone/Bird).")
@@ -27,10 +24,6 @@ video {
 </style>
 """, unsafe_allow_html=True)
 
-
-# =========================
-# Model (Auto download from Drive)
-# =========================
 MODEL_PATH = "best.pt"
 FILE_ID = "1Bd0EvtNsagapzoDQ1zMPKePceyjlJ6oJ"
 DRIVE_URL = f"https://drive.google.com/uc?id={FILE_ID}"
@@ -53,9 +46,6 @@ names = model.names if isinstance(model.names, dict) else {i: n for i, n in enum
 ALLOWED = {"drone", "bird"}
 
 
-# =========================
-# Controls (السلايدر)
-# =========================
 st.sidebar.header("⚙️ Settings")
 conf_thres = st.sidebar.slider("Confidence", 0.05, 0.95, 0.30, 0.05)
 iou_thres  = st.sidebar.slider("IoU", 0.05, 0.95, 0.50, 0.05)
@@ -67,9 +57,6 @@ if uploaded is None:
     st.stop()
 
 
-# =========================
-# Save input
-# =========================
 tmp_dir = tempfile.mkdtemp()
 input_path = os.path.join(tmp_dir, uploaded.name)
 
@@ -79,17 +66,11 @@ with open(input_path, "wb") as f:
 st.success("✅ تم رفع الفيديو")
 
 
-# =========================
-# Show input video (الأصلي فوق)
-# =========================
 st.subheader("🎬 الفيديو الأصلي")
 st.video(input_path)
 st.divider()
 
 
-# =========================
-# Read video
-# =========================
 cap = cv2.VideoCapture(input_path)
 if not cap.isOpened():
     st.error("❌ ما قدرت أفتح الفيديو.")
@@ -108,9 +89,7 @@ fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 writer = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
 
 
-# =========================
-# Processing (مثل اللي عندك + Status + Finished)
-# =========================
+
 st.subheader("⚙️ جاري المعالجة...")
 progress = st.progress(0)
 status = st.empty()
@@ -138,17 +117,14 @@ while True:
                 cls = int(b.cls[0]) if b.cls is not None else -1
                 name = names.get(cls, str(cls))
 
-                # ✅ فلترة Drone/Bird فقط
                 if name.lower() not in ALLOWED:
                     continue
 
                 x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
                 conf = float(b.conf[0]) if b.conf is not None else 0.0
 
-                # box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                # label background + text (اسم الكلاس الحقيقي)
                 txt = f"{name} {conf:.2f}"
                 (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
                 y_top = max(y1 - th - 10, 0)
@@ -181,9 +157,6 @@ progress.progress(100)
 status.write("✅ Finished!")
 
 
-# =========================
-# Convert to H264
-# =========================
 final_output_path = os.path.join(tmp_dir, "output_h264.mp4")
 
 ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
@@ -198,10 +171,6 @@ subprocess.run([
     final_output_path
 ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-
-# =========================
-# Show output
-# =========================
 st.subheader("📌 الفيديو الناتج")
 with open(final_output_path, "rb") as f:
     out_bytes = f.read()
