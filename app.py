@@ -66,11 +66,6 @@ with open(input_path, "wb") as f:
 st.success("✅ تم رفع الفيديو")
 
 
-st.subheader("🎬 الفيديو الأصلي")
-st.video(input_path)
-st.divider()
-
-
 cap = cv2.VideoCapture(input_path)
 if not cap.isOpened():
     st.error("❌ ما قدرت أفتح الفيديو.")
@@ -87,7 +82,6 @@ total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 raw_output_path = os.path.join(tmp_dir, "output_raw.mp4")
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 writer = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
-
 
 
 st.subheader("⚙️ جاري المعالجة...")
@@ -123,12 +117,15 @@ while True:
                 x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
                 conf = float(b.conf[0]) if b.conf is not None else 0.0
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # drone أحمر، bird أخضر
+                color = (0, 0, 255) if name.lower() == "drone" else (0, 255, 0)
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
                 txt = f"{name} {conf:.2f}"
                 (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
                 y_top = max(y1 - th - 10, 0)
-                cv2.rectangle(frame, (x1, y_top), (x1 + tw + 8, y1), (0, 255, 0), -1)
+                cv2.rectangle(frame, (x1, y_top), (x1 + tw + 8, y1), color, -1)
                 cv2.putText(
                     frame,
                     txt,
